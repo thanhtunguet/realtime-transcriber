@@ -6,6 +6,8 @@ Small toolkit built around OpenAI Whisper for:
 - Offline transcription of audio files with `.txt` and `.srt` outputs
 - Extracting audio from video using ffmpeg
 
+![screenshot.jpg](screenshot.jpg)
+
 ### Contents
 
 - `realtime_transcriber.py`: Real-time transcription from system audio (macOS virtual device) or mic
