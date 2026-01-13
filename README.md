@@ -6,7 +6,7 @@ Small toolkit built around OpenAI Whisper for:
 - Offline transcription of audio files with `.txt` and `.srt` outputs
 - Extracting audio from video using ffmpeg
 
-![screenshot.jpg](screenshot.jpg)
+![screenshot.jpg](screenshot.png)
 
 ### Contents
 
@@ -91,6 +91,7 @@ Options:
 Behavior details:
 
 - The script prints a single "(live)" line immediately from the current chunk, then re-transcribes a rolling window of recent chunks to refine the text. If the refined text modifies prior words, the printed line is prefixed with `Refined:`.
+- **Smart deduplication**: The algorithm tracks all committed text and uses word-based overlap detection to avoid outputting duplicate content as the sliding window moves. It handles minor transcription variations with fuzzy matching (70% threshold).
 - FP16 is enabled automatically on `cuda` and `mps` for speed.
 - A simple volume gate ignores near-silent chunks (amplitude threshold ~0.01).
 - Stop with Ctrl+C.
@@ -225,6 +226,7 @@ Real-time transcription of audio with optional lightweight speaker detection (un
 
 - Captures audio from a virtual system device (e.g., BlackHole) by default, or from the microphone with `--use-mic`.
 - Streams audio into chunks (default 3s), prints a live line first, then a refined line after aggregating a short history of chunks.
+- Uses smart deduplication with word-based overlap detection to eliminate duplicate output from the sliding window.
 - Detects speakers using MFCC features + `KMeans` over a sliding window, color-coding each inferred speaker.
 - Auto-selects device: MPS (Apple Silicon) > CUDA > CPU. Uses FP16 on CUDA/MPS.
 

@@ -38,7 +38,8 @@ class RealtimeTranscriber:
         self.chunk_size = int(chunk_duration * sample_rate)
         self.refinement_history = max(1, refinement_history)
         self.chunk_history: deque[np.ndarray] = deque(maxlen=self.refinement_history)
-        self.last_refined_text: str = ""
+        self.committed_text: str = ""  # All text that has been output to user
+        self.last_refined_text: str = ""  # Last refined text for comparison
         self._live_line_active = False
         self._live_line_length = 0
         self._color_index = 0
@@ -160,38 +161,93 @@ class RealtimeTranscriber:
         """Advance to the next color in the cycle."""
         self._color_index = (self._color_index + 1) % len(self.COLORS)
     
+    def _normalize_word(self, word: str) -> str:
+        """Normalize a word for comparison by lowercasing and stripping punctuation."""
+        return word.lower().strip('.,!?;:\'"()[]{}–—-')
+    
+    def _find_overlap_length(self, committed_words: list[str], new_words: list[str]) -> int:
+        """
+        Find how many words at the start of new_words overlap with the end of committed_words.
+        Uses fuzzy matching to handle minor transcription differences.
+        """
+        if not committed_words or not new_words:
+            return 0
+        
+        # Check overlap lengths from longest to shortest
+        max_overlap = min(len(committed_words), len(new_words), 30)  # Limit search
+        
+        for overlap_len in range(max_overlap, 2, -1):  # Require at least 3 words overlap
+            committed_suffix = committed_words[-overlap_len:]
+            new_prefix = new_words[:overlap_len]
+            
+            # Count matching words
+            matches = 0
+            for w1, w2 in zip(committed_suffix, new_prefix):
+                if self._normalize_word(w1) == self._normalize_word(w2):
+                    matches += 1
+            
+            # Require 70% match for this overlap length
+            if matches >= overlap_len * 0.7:
+                return overlap_len
+        
+        return 0
+    
     def _diff_refined_text(self, refined_text: str) -> tuple[str, bool]:
-        """Return the portion of text that is new compared to the last refinement."""
+        """
+        Return the portion of text that is new compared to ALL committed text.
+        Uses word-based overlap detection to handle sliding window overlap.
+        """
         if not refined_text:
             return "", False
         
-        if not self.last_refined_text:
+        refined_text = refined_text.strip()
+        
+        # First time - no committed text yet
+        if not self.committed_text:
+            self.committed_text = refined_text
             self.last_refined_text = refined_text
             return refined_text, False
         
-        last_text = self.last_refined_text
-        common_prefix_length = 0
-        for c1, c2 in zip(last_text, refined_text):
-            if c1 != c2:
-                break
-            common_prefix_length += 1
+        # Split into words for comparison
+        committed_words = self.committed_text.split()
+        refined_words = refined_text.split()
+        refined_original_words = refined_text.split()  # Keep original for output
         
-        # Avoid cutting through a word when possible
-        if (
-            common_prefix_length
-            and common_prefix_length < len(refined_text)
-            and not refined_text[common_prefix_length - 1].isspace()
-        ):
-            last_space = refined_text.rfind(" ", 0, common_prefix_length)
-            if last_space != -1:
-                common_prefix_length = last_space + 1
+        # Find overlap between end of committed text and start of refined text
+        overlap_len = self._find_overlap_length(committed_words, refined_words)
+        
+        if overlap_len > 0:
+            # We found overlap - only output words after the overlap
+            new_words = refined_original_words[overlap_len:]
+            if new_words:
+                new_text = ' '.join(new_words)
+                # Append to committed text
+                self.committed_text = self.committed_text + ' ' + new_text
+                self.last_refined_text = refined_text
+                return new_text, True
             else:
-                common_prefix_length = 0
-        
-        new_text = refined_text[common_prefix_length:].strip()
-        is_refinement = common_prefix_length < len(last_text)
-        self.last_refined_text = refined_text
-        return new_text, is_refinement
+                # Everything was overlap, no new content
+                self.last_refined_text = refined_text
+                return "", False
+        else:
+            # No overlap found - this might be a new segment or transcription jump
+            # Check if the refined text is substantially contained in committed text
+            # (to avoid re-outputting the same content with different wording)
+            
+            # If more than 70% of the refined text words already appeared in recent committed text, skip
+            refined_word_set = set(self._normalize_word(w) for w in refined_words if len(w) > 2)
+            committed_word_set = set(self._normalize_word(w) for w in committed_words[-50:] if len(w) > 2)
+            
+            if refined_word_set and committed_word_set:
+                overlap_ratio = len(refined_word_set & committed_word_set) / len(refined_word_set)
+                if overlap_ratio > 0.7:  # 70% of words already appeared
+                    self.last_refined_text = refined_text
+                    return "", False
+            
+            # New content - append to committed
+            self.committed_text = self.committed_text + ' ' + refined_text
+            self.last_refined_text = refined_text
+            return refined_text, False
     
     def _print_live_line(self, timestamp: str, text: str) -> None:
         """Show immediate transcription while waiting for refinement."""
@@ -234,6 +290,7 @@ class RealtimeTranscriber:
         """Process audio chunks from the queue"""
         audio_buffer = np.array([], dtype=np.float32)
         self.chunk_history.clear()
+        self.committed_text = ""
         self.last_refined_text = ""
         self._live_line_active = False
         self._live_line_length = 0
