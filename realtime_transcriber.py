@@ -362,7 +362,11 @@ class RealtimeTranscriber:
         finally:
             self.stop_recording()
             # Wait a bit for the processing thread to finish
-            time.sleep(1)
+            try:
+                time.sleep(1)
+            except KeyboardInterrupt:
+                # If interrupted during cleanup, just exit immediately
+                pass
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
