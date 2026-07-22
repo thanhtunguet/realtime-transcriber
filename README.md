@@ -1,6 +1,6 @@
 ## Whisper Tools: Real-time Transcriber and Subtitle Generator
 
-Small toolkit built around OpenAI Whisper for:
+Small toolkit built around MLX Whisper (Apple Silicon) for:
 
 - Real-time transcription of system audio or microphone input
 - Offline transcription of audio files with `.txt` and `.srt` outputs
@@ -24,8 +24,7 @@ Small toolkit built around OpenAI Whisper for:
 
 Python dependencies (see `requirements.txt`):
 
-- openai-whisper
-- torch
+- mlx-whisper
 - sounddevice
 - numpy
 - librosa
@@ -44,7 +43,7 @@ pip install -r requirements.txt
 Notes:
 
 - ffmpeg is required for `extract.py`. On macOS (Homebrew): `brew install ffmpeg`. On Linux: install via your distro. On Windows: install ffmpeg and add it to PATH.
-- Apple Silicon (M1/M2/M3): Whisper can run with Metal (MPS) acceleration via PyTorch. This script auto-selects `mps` if available. If MPS is unavailable, it will fall back to CPU.
+- MLX Whisper runs on the Apple Silicon GPU via Apple's MLX framework and requires an M-series Mac (macOS). Models are downloaded automatically from the Hugging Face `mlx-community` repos on first use and cached locally.
 
 ## Usage
 
@@ -52,7 +51,7 @@ Notes:
 
 `realtime_transcriber.py` streams audio into Whisper, prints a live hypothesis, and replaces it with a refined line as more context arrives.
 
-Basic (auto device selection, prefer system audio on macOS if a virtual device is detected):
+Basic (prefer system audio on macOS if a virtual device is detected):
 
 ```bash
 python realtime_transcriber.py
@@ -64,10 +63,10 @@ Use the microphone instead of system audio:
 python realtime_transcriber.py --use-mic
 ```
 
-Choose model and device:
+Choose a model:
 
 ```bash
-python realtime_transcriber.py --model small --device mps
+python realtime_transcriber.py --model small
 ```
 
 Tune chunking and refinement:
@@ -81,8 +80,7 @@ python realtime_transcriber.py \
 
 Options:
 
-- `--model {tiny,base,small,medium,large,large-v2,large-v3}`: Whisper model (default: `base`)
-- `--device {cpu,cuda,mps}`: Force device (default: auto-select; prefers MPS on macOS, then CUDA, then CPU)
+- `--model MODEL`: Whisper model size (`tiny,base,small,medium,large,large-v2,large-v3,large-v3-turbo`) or a Hugging Face MLX repo id (default: `base`)
 - `--chunk-duration FLOAT`: Per-inference audio window in seconds (default: `3.0`)
 - `--sample-rate INT`: Input sample rate (default: `16000`)
 - `--refinement-chunks INT`: Rolling window of recent chunks to re-transcribe for refinement (default: `3`)
@@ -92,7 +90,7 @@ Behavior details:
 
 - The script prints a single "(live)" line immediately from the current chunk, then re-transcribes a rolling window of recent chunks to refine the text. If the refined text modifies prior words, the printed line is prefixed with `Refined:`.
 - **Smart deduplication**: The algorithm tracks all committed text and uses word-based overlap detection to avoid outputting duplicate content as the sliding window moves. It handles minor transcription variations with fuzzy matching (70% threshold).
-- FP16 is enabled automatically on `cuda` and `mps` for speed.
+- Inference runs on the Apple Silicon GPU via MLX.
 - A simple volume gate ignores near-silent chunks (amplitude threshold ~0.01).
 - Stop with Ctrl+C.
 
@@ -117,16 +115,14 @@ Specify options:
 python main.py path/to/audio.wav \
   --model small \
   --language en \
-  --device cpu \
   --out-base ./outputs/my_transcript
 ```
 
 Options:
 
 - `audio`: Path to input audio file
-- `--model {tiny,base,small,medium,large,large-v2,large-v3}` (default: `small`)
+- `--model MODEL`: model size (`tiny,base,small,medium,large,large-v2,large-v3,large-v3-turbo`) or a Hugging Face MLX repo id (default: `small`)
 - `--language CODE`: e.g., `en`, `vi`; auto-detect if omitted
-- `--device {cpu,cuda}`: Auto if omitted
 - `--out-base PATH`: Output base path without extension; default is alongside the input
 
 Outputs:
@@ -173,17 +169,17 @@ Options:
 - `sounddevice` errors: Ensure PortAudio is installed/available. On macOS, it is typically present; on Linux, install `portaudio` via your package manager.
 - ffmpeg not found: Install ffmpeg and ensure it is on your PATH. macOS (Homebrew): `brew install ffmpeg`.
 - Performance:
-  - Use smaller Whisper models (`tiny`/`base`/`small`) for low-latency real-time use
-  - Prefer GPU (`cuda`) or Apple Silicon (`mps`) where available
+  - Use smaller Whisper models (`tiny`/`base`/`small`) for low-latency real-time use; `large-v3-turbo` is a good speed/accuracy balance
   - Reduce `--chunk-duration` and/or `--refinement-chunks` to lower latency
+  - Larger models use more GPU memory; pick a size that fits your Mac
 
 ## Acknowledgments
 
-- Built on top of OpenAI Whisper
+- Built on top of OpenAI Whisper, running via Apple's MLX (`mlx-whisper`)
 
 # Whisper Tools
 
-Utilities for transcribing audio and video using OpenAI Whisper, including:
+Utilities for transcribing audio and video using MLX Whisper (Apple Silicon), including:
 
 - Real-time transcription from system audio or microphone with optional speaker detection (`realtime_transcriber.py`).
 - Batch transcription from an audio file to `.srt` subtitles and `.txt` transcript (`main.py`).
@@ -215,9 +211,9 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-`requirements.txt` includes: `openai-whisper`, `torch`, `numpy`, `sounddevice`, `colorama`, `scikit-learn`, `librosa`.
+`requirements.txt` includes: `mlx-whisper`, `numpy`, `sounddevice`, `colorama`, `scikit-learn`, `librosa`.
 
-Note: Torch wheel selection depends on your platform. On Apple Silicon, the tools auto-select Metal (MPS) if available. On NVIDIA GPUs, CUDA is used if available.
+Note: `mlx-whisper` requires an Apple Silicon Mac and runs on the GPU via Apple's MLX framework. Models are pulled from the Hugging Face `mlx-community` repos and cached on first use.
 
 ## Scripts
 
@@ -228,34 +224,28 @@ Real-time transcription of audio with optional lightweight speaker detection (un
 - Streams audio into chunks (default 3s), prints a live line first, then a refined line after aggregating a short history of chunks.
 - Uses smart deduplication with word-based overlap detection to eliminate duplicate output from the sliding window.
 - Detects speakers using MFCC features + `KMeans` over a sliding window, color-coding each inferred speaker.
-- Auto-selects device: MPS (Apple Silicon) > CUDA > CPU. Uses FP16 on CUDA/MPS.
+- Runs on the Apple Silicon GPU via MLX.
 
 Usage examples:
 
 ```bash
-# System audio (default) with auto device and base model
+# System audio (default) with base model
 python realtime_transcriber.py
 
 # Use microphone as input
 python realtime_transcriber.py --use-mic
 
-# Choose model, device, chunking, and speaker detection
+# Choose model and chunking
 python realtime_transcriber.py \
   --model small \
-  --device mps \
   --chunk-duration 2.5 \
   --sample-rate 16000 \
-  --refinement-chunks 3 \
-  --max-speakers 4
-
-# Disable speaker detection
-python realtime_transcriber.py --disable-speaker-detection
+  --refinement-chunks 3
 ```
 
 Key options:
 
-- `--model`: `tiny|base|small|medium|large|large-v2|large-v3` (default: `base`)
-- `--device`: `cpu|cuda|mps` (default: auto)
+- `--model`: `tiny|base|small|medium|large|large-v2|large-v3|large-v3-turbo` or an MLX repo id (default: `base`)
 - `--chunk-duration`: seconds per chunk (default: 3.0)
 - `--sample-rate`: input sample rate (default: 16000)
 - `--refinement-chunks`: number of recent chunks used to refine text (default: 3)
@@ -274,8 +264,7 @@ Transcribes an audio file and writes both a plain-text transcript and an `.srt` 
 ```bash
 python main.py /path/to/audio.wav \
   --model small \
-  --language en \
-  --device cuda        # or cpu
+  --language en
 ```
 
 Outputs:
@@ -304,7 +293,8 @@ If `--output` is omitted, the output path defaults to the input stem with the ch
 - `sounddevice`/PortAudio errors: Install PortAudio (`brew install portaudio`) and reinstall `sounddevice` if needed.
 - No system audio captured on macOS: Install and select a virtual audio device like BlackHole. The script auto-selects if detected.
 - Poor real-time accuracy: Try a larger model (`small`/`medium`), increase `--refinement-chunks`, or ensure clean audio.
-- High CPU/GPU usage: Reduce model size, increase `--chunk-duration`, or run on GPU/MPS.
+- High GPU usage / memory pressure: Reduce model size or increase `--chunk-duration`.
+- `mlx_whisper` import error: Ensure you're on an Apple Silicon Mac and have installed `mlx-whisper` (`pip install -r requirements.txt`).
 
 ## License
 

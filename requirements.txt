@@ -1,7 +1,6 @@
-openai-whisper
+mlx-whisper
 sounddevice
 numpy
-torch
 colorama
 scikit-learn
 librosa

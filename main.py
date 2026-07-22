@@ -28,26 +28,33 @@ def write_srt(segments: list[dict], srt_path: Path) -> None:
     srt_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+# Map friendly model sizes to pre-converted MLX models on the Hugging Face Hub.
+MLX_MODEL_REPOS = {
+    "tiny": "mlx-community/whisper-tiny-mlx",
+    "base": "mlx-community/whisper-base-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "large": "mlx-community/whisper-large-v3-mlx",
+    "large-v2": "mlx-community/whisper-large-v2-mlx",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+}
+
+
 def transcribe(
     audio_path: Path,
     model_size: str = "small",
     language: str | None = None,
-    device: str | None = None,
 ) -> tuple[str, list[dict]]:
-    import whisper  # lazy import to avoid dependency if only extracting
+    import mlx_whisper  # lazy import to avoid dependency if only extracting
 
-    # Auto-select device if not provided
-    if device is None:
-        try:
-            import torch  # type: ignore
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception:
-            device = "cpu"
-
-    model = whisper.load_model(model_size, device=device)
-    fp16 = device == "cuda"
-    result = model.transcribe(str(audio_path), language=language, fp16=fp16)
+    # MLX Whisper runs on the Apple Silicon GPU; there is no device selection.
+    model_repo = MLX_MODEL_REPOS.get(model_size, model_size)
+    result = mlx_whisper.transcribe(
+        str(audio_path),
+        path_or_hf_repo=model_repo,
+        language=language,
+    )
 
     text: str = result.get("text", "").strip()
     segments: list[dict] = result.get("segments", [])
@@ -56,36 +63,23 @@ def transcribe(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate subtitles using OpenAI Whisper from an audio file."
+        description="Generate subtitles using MLX Whisper from an audio file."
     )
     parser.add_argument("audio", type=str, help="Path to input audio file")
     parser.add_argument(
         "--model",
         type=str,
         default="small",
-        choices=[
-            "tiny",
-            "base",
-            "small",
-            "medium",
-            "large",
-            "large-v2",
-            "large-v3",
-        ],
-        help="Whisper model size (default: small)",
+        help=(
+            "Whisper model size (tiny, base, small, medium, large, large-v2, "
+            "large-v3, large-v3-turbo) or a Hugging Face MLX repo id (default: small)"
+        ),
     )
     parser.add_argument(
         "--language",
         type=str,
         default=None,
         help="Language code (e.g., en, vi). Auto-detect if omitted.",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        choices=["cpu", "cuda"],
-        help="Force device selection (default: auto)",
     )
     parser.add_argument(
         "--out-base",
@@ -112,7 +106,6 @@ def main() -> None:
         audio_path=audio_path,
         model_size=args.model,
         language=args.language,
-        device=args.device,
     )
 
     txt_path = out_base.with_suffix(".txt")
