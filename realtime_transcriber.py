@@ -74,9 +74,10 @@ class RealtimeTranscriber:
         if status:
             print(f"Audio callback status: {status}")
 
-        # Convert to mono if stereo
+        # Mix down to mono. Sum (not mean) so a mic on one channel of a
+        # multi-channel aggregate device isn't diluted by silent channels.
         if indata.shape[1] > 1:
-            audio_data = np.mean(indata, axis=1)
+            audio_data = np.clip(np.sum(indata, axis=1), -1.0, 1.0)
         else:
             audio_data = indata[:, 0]
 
@@ -104,11 +105,32 @@ class RealtimeTranscriber:
             print("Using default input device instead...")
             return None
 
-    def start_recording(self, use_system_audio: bool = True):
+    def find_input_device(self, device: str):
+        """Resolve a device index or (partial) name to an input device index"""
+        devices = sd.query_devices()
+        if device.isdigit():
+            device_id = int(device)
+            if device_id >= len(devices) or devices[device_id]['max_input_channels'] <= 0:
+                raise ValueError(f"Device {device_id} is not a valid input device")
+            return device_id
+
+        for i, info in enumerate(devices):
+            if device.lower() in info['name'].lower() and info['max_input_channels'] > 0:
+                return i
+        raise ValueError(f"No input device matching '{device}'. Use --list-devices to see options.")
+
+    def start_recording(self, use_system_audio: bool = True, device: str | None = None):
         """Start recording audio"""
         device_id = None
-        if use_system_audio:
+        if device is not None:
+            device_id = self.find_input_device(device)
+        elif use_system_audio:
             device_id = self.get_system_audio_device()
+
+        if device_id is not None:
+            info = sd.query_devices(device_id)
+            print(f"Input device: [{device_id}] {info['name']} "
+                  f"({info['max_input_channels']} channels, default {info['default_samplerate']:.0f} Hz)")
 
         self.is_recording = True
 
@@ -347,10 +369,10 @@ class RealtimeTranscriber:
             except KeyboardInterrupt:
                 break
 
-    def run(self, use_system_audio: bool = True):
+    def run(self, use_system_audio: bool = True, device: str | None = None):
         """Run the real-time transcriber"""
         try:
-            self.start_recording(use_system_audio)
+            self.start_recording(use_system_audio, device)
 
             # Start processing thread
             process_thread = threading.Thread(target=self.process_audio)
@@ -411,10 +433,25 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use microphone instead of system audio",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Input device index or part of its name (e.g. an aggregate device); overrides --use-mic",
+    )
+    parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="List audio devices and exit",
+    )
     return parser.parse_args()
 
 def main():
     args = parse_args()
+
+    if args.list_devices:
+        print(sd.query_devices())
+        return
 
     transcriber = RealtimeTranscriber(
         model_size=args.model,
@@ -424,7 +461,7 @@ def main():
     )
 
     use_system_audio = not args.use_mic
-    transcriber.run(use_system_audio=use_system_audio)
+    transcriber.run(use_system_audio=use_system_audio, device=args.device)
 
 if __name__ == "__main__":
     main()
