@@ -90,7 +90,7 @@ Options:
 
 Behavior details:
 
-- **Speaker detection**: Each chunk is fingerprinted (average MFCC envelope plus median pitch) and matched to the nearest known speaker, so the number of speakers can grow freely. A new speaker is created only when a voice is far from everyone known and the next chunk agrees; until then the line is tagged `Speaker ?`. Each speaker gets a consistent color. It assumes one speaker per chunk and works best with clearly different voices.
+- **Speaker detection**: Each chunk is fingerprinted (average MFCC envelope plus median pitch) and matched to the nearest known speaker, so the number of speakers can grow freely. A new speaker is created only when a voice is far from everyone known and the next chunk agrees; until then the line is tagged `Speaker ?`, and once the speaker is confirmed those lines are rewritten in place with the real number and color (terminal only). Each speaker gets a consistent color. It assumes one speaker per chunk and works best with clearly different voices.
 - The script prints a single "(live)" line immediately from the current chunk, then re-transcribes a rolling window of recent chunks to refine the text. If the refined text modifies prior words, the printed line is prefixed with `Refined:`.
 - **Smart deduplication**: The algorithm tracks all committed text and uses word-based overlap detection to avoid outputting duplicate content as the sliding window moves. It handles minor transcription variations with fuzzy matching (70% threshold).
 - Inference runs on the Apple Silicon GPU via MLX.

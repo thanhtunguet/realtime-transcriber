@@ -44,8 +44,14 @@ class OnlineDiarizer:
 
         self._sums: list[np.ndarray] = []  # running sum of fingerprints per speaker
         self._counts: list[int] = []
-        self._pending: list[np.ndarray] = []  # recent unknown-looking chunks
+        self._pending: list[tuple[int, np.ndarray]] = []  # recent unknown-looking (chunk id, fingerprint)
         self._last_speaker: int | None = None
+
+        # Every identify() call gets a sequential id. When a new speaker is
+        # confirmed, `resolved_ids` lists the earlier chunks that were returned
+        # as None and are now known to belong to the returned speaker.
+        self.chunk_id = -1
+        self.resolved_ids: list[int] = []
 
     @property
     def num_speakers(self) -> int:
@@ -79,7 +85,12 @@ class OnlineDiarizer:
         return self._sums[i] / self._counts[i]
 
     def identify(self, audio: np.ndarray) -> int | None:
-        """Return the 0-based speaker index for this chunk (None if undecidable)."""
+        """Return the 0-based speaker index for this chunk (None if undecidable).
+
+        Check `resolved_ids` after the call for earlier chunks it settled.
+        """
+        self.chunk_id += 1
+        self.resolved_ids = []
         feat = self._fingerprint(audio)
         if feat is None:
             return self._last_speaker
@@ -102,12 +113,14 @@ class OnlineDiarizer:
 
         # Looks like someone new: wait until consecutive chunks agree. Until
         # then the chunk is left unlabeled rather than blamed on someone else.
-        self._pending.append(feat)
+        self._pending.append((self.chunk_id, feat))
         if len(self._pending) >= self.confirm_chunks:
-            mean = np.mean(self._pending, axis=0)
-            if all(np.linalg.norm(p - mean) < self.new_speaker_distance for p in self._pending):
-                self._sums.append(np.sum(self._pending, axis=0))
-                self._counts.append(len(self._pending))
+            feats = [f for _, f in self._pending]
+            mean = np.mean(feats, axis=0)
+            if all(np.linalg.norm(f - mean) < self.new_speaker_distance for f in feats):
+                self._sums.append(np.sum(feats, axis=0))
+                self._counts.append(len(feats))
+                self.resolved_ids = [i for i, _ in self._pending[:-1]]
                 self._pending.clear()
                 self._last_speaker = self.num_speakers - 1
                 return self._last_speaker

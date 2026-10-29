@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import queue
+import shutil
 import threading
 import sys
 import time
@@ -37,6 +38,7 @@ class RealtimeTranscriber:
     ]
     UNKNOWN_SPEAKER_COLOR = '\033[90m'  # Gray, for chunks not yet attributed
     RESET = '\033[0m'
+    MAX_REWRITABLE_LINES = 100
 
     def __init__(
         self,
@@ -63,6 +65,7 @@ class RealtimeTranscriber:
             else None
         )
         self._current_speaker: int | None = None
+        self._printed: list[dict] = []  # recent finished lines, kept so 'Speaker ?' can be rewritten
 
         # Resolve the MLX model repo. MLX Whisper runs on the Apple Silicon GPU
         # natively, so there is no device/fp16 selection to make.
@@ -191,26 +194,80 @@ class RealtimeTranscriber:
             print(f"Transcription error: {e}")
             return ""
 
-    def _get_next_color(self) -> str:
-        """Color of the current speaker, or the next color in the cycle without diarization."""
+    def _color_for(self, speaker: int | None) -> str:
+        """Color of a speaker, or the next color in the cycle without diarization."""
         if self.diarizer:
-            if self._current_speaker is None:
+            if speaker is None:
                 return self.UNKNOWN_SPEAKER_COLOR
-            return self.COLORS[self._current_speaker % len(self.COLORS)]
+            return self.COLORS[speaker % len(self.COLORS)]
         return self.COLORS[self._color_index]
+
+    def _get_next_color(self) -> str:
+        return self._color_for(self._current_speaker)
 
     def _advance_color(self) -> None:
         """Advance to the next color in the cycle (colors follow speakers when diarizing)."""
         if not self.diarizer:
             self._color_index = (self._color_index + 1) % len(self.COLORS)
 
-    def _speaker_tag(self) -> str:
-        """Label for the current speaker, empty when diarization is off."""
+    def _tag_for(self, speaker: int | None) -> str:
+        """Label for a speaker, empty when diarization is off."""
         if not self.diarizer:
             return ""
-        if self._current_speaker is None:
+        if speaker is None:
             return "Speaker ?: "
-        return f"Speaker {self._current_speaker + 1}: "
+        return f"Speaker {speaker + 1}: "
+
+    def _speaker_tag(self) -> str:
+        return self._tag_for(self._current_speaker)
+
+    def _format_line(self, entry: dict) -> tuple[str, int]:
+        """Colored text of a printed line and how many terminal rows it occupies."""
+        tag = self._tag_for(entry["speaker"])
+        plain = f"[{entry['timestamp']}] {entry['prefix']}{tag}{entry['text']}"
+        color = self._color_for(entry["speaker"]) if self.diarizer else entry["color"]
+        cols = shutil.get_terminal_size().columns
+        rows = max(1, -(-len(plain) // cols))
+        return f"{color}{plain}{self.RESET}", rows
+
+    def _emit_line(self, timestamp: str, prefix: str, text: str) -> None:
+        """Print a finished line and remember it so its speaker can be backfilled."""
+        entry = {
+            "timestamp": timestamp,
+            "prefix": prefix,
+            "text": text,
+            "speaker": self._current_speaker,
+            "chunk_id": self.diarizer.chunk_id if self.diarizer else -1,
+            "color": self._get_next_color(),
+        }
+        line, entry["rows"] = self._format_line(entry)
+        print(line, flush=True)
+        self._printed.append(entry)
+        del self._printed[:-self.MAX_REWRITABLE_LINES]
+        self._advance_color()
+
+    def _backfill_speakers(self, chunk_ids: list[int], speaker: int) -> None:
+        """Replace 'Speaker ?' with the real speaker on already-printed lines."""
+        targets = set(chunk_ids)
+        first = None
+        for i, entry in enumerate(self._printed):
+            if entry["chunk_id"] in targets and entry["speaker"] is None:
+                entry["speaker"] = speaker
+                if first is None:
+                    first = i
+        if first is None or not sys.stdout.isatty():
+            return
+
+        # Cursor sits on the empty row below the last printed line (no live line
+        # is active between chunks), so move up, wipe, and reprint from there.
+        rows_up = sum(e["rows"] for e in self._printed[first:])
+        if rows_up >= shutil.get_terminal_size().lines:
+            return  # already scrolled out of view
+        sys.stdout.write(f"\033[{rows_up}A\r\033[J")
+        for entry in self._printed[first:]:
+            line, entry["rows"] = self._format_line(entry)
+            print(line)
+        sys.stdout.flush()
 
     def _normalize_word(self, word: str) -> str:
         """Normalize a word for comparison by lowercasing and stripping punctuation."""
@@ -318,16 +375,13 @@ class RealtimeTranscriber:
             self._clear_live_line()
             return
 
-        color = self._get_next_color()
         prefix = "Refined: " if is_refinement else ""
-        line = f"{color}[{timestamp}] {prefix}{self._speaker_tag()}{text}{self.RESET}"
         if self._live_line_active:
             sys.stdout.write("\r" + " " * self._live_line_length + "\r")
             sys.stdout.flush()
-        print(line, flush=True)
+        self._emit_line(timestamp, prefix, text)
         self._live_line_active = False
         self._live_line_length = 0
-        self._advance_color()
 
     def _clear_live_line(self) -> None:
         """Clear any live line when no refined text is produced."""
@@ -365,6 +419,10 @@ class RealtimeTranscriber:
                         timestamp = datetime.now().strftime("%H:%M:%S")
                         if self.diarizer:
                             self._current_speaker = self.diarizer.identify(chunk)
+                            if self.diarizer.resolved_ids:
+                                self._backfill_speakers(
+                                    self.diarizer.resolved_ids, self._current_speaker
+                                )
                         live_text = self.transcribe_chunk(chunk)
                         if live_text:
                             self._print_live_line(timestamp, live_text)
@@ -381,10 +439,8 @@ class RealtimeTranscriber:
                                 final_text = new_text if new_text else (live_text or "")
                                 self._replace_live_line(timestamp, final_text, is_refinement)
                             elif new_text:
-                                color = self._get_next_color()
                                 prefix = "Refined: " if is_refinement else ""
-                                print(f"{color}[{timestamp}] {prefix}{self._speaker_tag()}{new_text}{self.RESET}")
-                                self._advance_color()
+                                self._emit_line(timestamp, prefix, new_text)
                         else:
                             if self._live_line_active:
                                 self._replace_live_line(timestamp, live_text or "", False)
