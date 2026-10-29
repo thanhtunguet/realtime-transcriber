@@ -85,9 +85,12 @@ Options:
 - `--sample-rate INT`: Input sample rate (default: `16000`)
 - `--refinement-chunks INT`: Rolling window of recent chunks to re-transcribe for refinement (default: `3`)
 - `--use-mic`: Use microphone instead of system audio
+- `--no-diarize`: Disable speaker detection (labels and per-speaker colors)
+- `--speaker-threshold FLOAT`: How different a voice must be to count as a new speaker (default: `1.5`; higher merges similar voices, lower splits more eagerly)
 
 Behavior details:
 
+- **Speaker detection**: Each chunk is fingerprinted (average MFCC envelope plus median pitch) and matched to the nearest known speaker, so the number of speakers can grow freely. A new speaker is created only when a voice is far from everyone known and the next chunk agrees; until then the line is tagged `Speaker ?`. Each speaker gets a consistent color. It assumes one speaker per chunk and works best with clearly different voices.
 - The script prints a single "(live)" line immediately from the current chunk, then re-transcribes a rolling window of recent chunks to refine the text. If the refined text modifies prior words, the printed line is prefixed with `Refined:`.
 - **Smart deduplication**: The algorithm tracks all committed text and uses word-based overlap detection to avoid outputting duplicate content as the sliding window moves. It handles minor transcription variations with fuzzy matching (70% threshold).
 - Inference runs on the Apple Silicon GPU via MLX.
@@ -250,8 +253,8 @@ Key options:
 - `--sample-rate`: input sample rate (default: 16000)
 - `--refinement-chunks`: number of recent chunks used to refine text (default: 3)
 - `--use-mic`: use microphone input instead of system audio
-- `--disable-speaker-detection`: single speaker mode
-- `--max-speakers`: maximum distinct speakers to colorize (default: 4)
+- `--no-diarize`: disable speaker detection
+- `--speaker-threshold`: how different a voice must be to count as a new speaker (default: 1.5; higher merges similar voices, lower splits more)
 
 Notes:
 

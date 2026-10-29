@@ -9,6 +9,7 @@ from datetime import datetime
 import numpy as np
 import sounddevice as sd
 import mlx_whisper
+from diarizer import OnlineDiarizer
 
 # Map friendly model sizes to pre-converted MLX models on the Hugging Face Hub.
 MLX_MODEL_REPOS = {
@@ -34,6 +35,7 @@ class RealtimeTranscriber:
         '\033[97m',  # White
         '\033[38;5;214m',  # Bright Orange
     ]
+    UNKNOWN_SPEAKER_COLOR = '\033[90m'  # Gray, for chunks not yet attributed
     RESET = '\033[0m'
 
     def __init__(
@@ -42,6 +44,8 @@ class RealtimeTranscriber:
         chunk_duration: float = 3.0,
         sample_rate: int = 16000,
         refinement_history: int = 3,
+        diarize: bool = True,
+        speaker_threshold: float = 1.5,
     ):
         self.chunk_duration = chunk_duration
         self.sample_rate = sample_rate
@@ -53,6 +57,12 @@ class RealtimeTranscriber:
         self._live_line_active = False
         self._live_line_length = 0
         self._color_index = 0
+        self.diarizer = (
+            OnlineDiarizer(sample_rate=sample_rate, new_speaker_distance=speaker_threshold)
+            if diarize
+            else None
+        )
+        self._current_speaker: int | None = None
 
         # Resolve the MLX model repo. MLX Whisper runs on the Apple Silicon GPU
         # natively, so there is no device/fp16 selection to make.
@@ -182,13 +192,25 @@ class RealtimeTranscriber:
             return ""
 
     def _get_next_color(self) -> str:
-        """Get the next color in the cycle."""
-        color = self.COLORS[self._color_index]
-        return color
+        """Color of the current speaker, or the next color in the cycle without diarization."""
+        if self.diarizer:
+            if self._current_speaker is None:
+                return self.UNKNOWN_SPEAKER_COLOR
+            return self.COLORS[self._current_speaker % len(self.COLORS)]
+        return self.COLORS[self._color_index]
 
     def _advance_color(self) -> None:
-        """Advance to the next color in the cycle."""
-        self._color_index = (self._color_index + 1) % len(self.COLORS)
+        """Advance to the next color in the cycle (colors follow speakers when diarizing)."""
+        if not self.diarizer:
+            self._color_index = (self._color_index + 1) % len(self.COLORS)
+
+    def _speaker_tag(self) -> str:
+        """Label for the current speaker, empty when diarization is off."""
+        if not self.diarizer:
+            return ""
+        if self._current_speaker is None:
+            return "Speaker ?: "
+        return f"Speaker {self._current_speaker + 1}: "
 
     def _normalize_word(self, word: str) -> str:
         """Normalize a word for comparison by lowercasing and stripping punctuation."""
@@ -281,9 +303,10 @@ class RealtimeTranscriber:
     def _print_live_line(self, timestamp: str, text: str) -> None:
         """Show immediate transcription while waiting for refinement."""
         color = self._get_next_color()
-        line = f"{color}[{timestamp}] (live) {text}{self.RESET}"
+        tag = self._speaker_tag()
+        line = f"{color}[{timestamp}] (live) {tag}{text}{self.RESET}"
         # Store length without ANSI codes for proper clearing
-        line_plain = f"[{timestamp}] (live) {text}"
+        line_plain = f"[{timestamp}] (live) {tag}{text}"
         sys.stdout.write("\r" + line)
         sys.stdout.flush()
         self._live_line_active = True
@@ -297,7 +320,7 @@ class RealtimeTranscriber:
 
         color = self._get_next_color()
         prefix = "Refined: " if is_refinement else ""
-        line = f"{color}[{timestamp}] {prefix}{text}{self.RESET}"
+        line = f"{color}[{timestamp}] {prefix}{self._speaker_tag()}{text}{self.RESET}"
         if self._live_line_active:
             sys.stdout.write("\r" + " " * self._live_line_length + "\r")
             sys.stdout.flush()
@@ -340,6 +363,8 @@ class RealtimeTranscriber:
                     if np.max(np.abs(chunk)) > 0.01:  # Minimum volume threshold
                         chunk = chunk.astype(np.float32, copy=True)
                         timestamp = datetime.now().strftime("%H:%M:%S")
+                        if self.diarizer:
+                            self._current_speaker = self.diarizer.identify(chunk)
                         live_text = self.transcribe_chunk(chunk)
                         if live_text:
                             self._print_live_line(timestamp, live_text)
@@ -358,7 +383,7 @@ class RealtimeTranscriber:
                             elif new_text:
                                 color = self._get_next_color()
                                 prefix = "Refined: " if is_refinement else ""
-                                print(f"{color}[{timestamp}] {prefix}{new_text}{self.RESET}")
+                                print(f"{color}[{timestamp}] {prefix}{self._speaker_tag()}{new_text}{self.RESET}")
                                 self._advance_color()
                         else:
                             if self._live_line_active:
@@ -440,6 +465,20 @@ def parse_args() -> argparse.Namespace:
         help="Input device index or part of its name (e.g. an aggregate device); overrides --use-mic",
     )
     parser.add_argument(
+        "--no-diarize",
+        action="store_true",
+        help="Disable speaker detection (labels and per-speaker colors)",
+    )
+    parser.add_argument(
+        "--speaker-threshold",
+        type=float,
+        default=1.5,
+        help=(
+            "How different a voice must be to count as a new speaker; higher "
+            "merges similar voices, lower splits more eagerly (default: 1.5)"
+        ),
+    )
+    parser.add_argument(
         "--list-devices",
         action="store_true",
         help="List audio devices and exit",
@@ -458,6 +497,8 @@ def main():
         chunk_duration=args.chunk_duration,
         sample_rate=args.sample_rate,
         refinement_history=args.refinement_chunks,
+        diarize=not args.no_diarize,
+        speaker_threshold=args.speaker_threshold,
     )
 
     use_system_audio = not args.use_mic
